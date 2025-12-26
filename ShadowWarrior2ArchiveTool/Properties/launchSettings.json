@@ -1,0 +1,8 @@
+{
+  "profiles": {
+    "ShadowWarrior2ArchiveTool": {
+      "commandName": "Project",
+      "commandLineArgs": "pack \"D:\\GOG Games\\Shadow Warrior 2\\pc_arch_scripts\" \"D:\\GOG Games\\Shadow Warrior 2\\pc_arch_scripts.bin\" "
+    }
+  }
+}
