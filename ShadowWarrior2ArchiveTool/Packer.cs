@@ -1,5 +1,6 @@
 ﻿using System.IO.Compression;
 using System.Text;
+using System.Text.Json;
 
 namespace ShadowWarrior2ArchiveTool
 {
@@ -24,6 +25,35 @@ namespace ShadowWarrior2ArchiveTool
             }
 
             string[] allFiles = Directory.GetFiles(inputDir, "*", SearchOption.AllDirectories);
+
+            // read pack config file if exists
+            string configFileName = "unpacked_config.json";
+            string configPath = Path.Combine(inputDir, configFileName);
+            Dictionary<string, bool> processedFiles = new Dictionary<string, bool>();
+
+            if (File.Exists(configPath))
+            {
+                allFiles = allFiles.Where(p => !Path.GetFullPath(p).Equals(Path.GetFullPath(configPath), 
+                    StringComparison.OrdinalIgnoreCase)).ToArray();
+                try
+                {
+                    string json = File.ReadAllText(configPath, Encoding.UTF8);
+                    ConfigModel? cfg = JsonSerializer.Deserialize<ConfigModel>(json);
+                    if (cfg != null && cfg.files != null)
+                    {
+                        foreach (var fileModel in cfg.files)
+                        {
+                            string fileName = fileModel.path.Replace('\\', '/');
+                            processedFiles[fileName] = fileModel.isCompressed;
+                        }
+                    }
+                }
+                catch
+                {
+                   
+                }
+            }
+
             List<FileEntry> entries = new List<FileEntry>();
             List<ushort> globalChunkSizes = new List<ushort>();
 
@@ -39,6 +69,8 @@ namespace ShadowWarrior2ArchiveTool
                 foreach (string filePath in allFiles)
                 {
                     string relativeName = Path.GetRelativePath(inputDir, filePath).Replace('\\', '/');
+                    
+                    processedFiles.TryGetValue(relativeName, out bool isCompressed);
                     byte[] fileData = File.ReadAllBytes(filePath);
 
                     FileEntry entry = new FileEntry
@@ -57,68 +89,45 @@ namespace ShadowWarrior2ArchiveTool
                         continue;
                     }
 
-                    List<byte[]> compressedChunks = new List<byte[]>();
-                    uint totalZSize = 0;
-                    bool shouldCompress = false;
-
-                    int chunksCount = (int)((entry.Size + CHUNK_SIZE - 1) / CHUNK_SIZE);
-
-                    for (int c = 0; c < chunksCount; c++)
-                    {
-                        int offset = (int)(c * CHUNK_SIZE);
-                        int size = (int)Math.Min(CHUNK_SIZE, entry.Size - offset);
-                        byte[] chunk = new byte[size];
-                        Array.Copy(fileData, offset, chunk, 0, size);
-
-                        byte[] compressed = CompressData(chunk);
-
-                        // if compression not effective, store uncompressed
-                        if (compressed.Length >= size)
-                        {
-                            compressedChunks.Add(chunk);
-                            totalZSize += (uint)size;
-                        }
-                        else
-                        {
-                            compressedChunks.Add(compressed);
-                            totalZSize += (uint)compressed.Length;
-                            shouldCompress = true;
-                        }
-                    }
-
                     // check if compression is beneficial
-                    if (shouldCompress)
+                    if (isCompressed)
                     {
                         entry.ChunkIdx = globalChunkSizes.Count;
-                        entry.CompressedSize = totalZSize;
+                        uint totalCompressedSize = 0;
+                        int chunksCount = (int)((entry.Size + CHUNK_SIZE - 1) / CHUNK_SIZE);
 
-                        for (int i = 0; i < compressedChunks.Count; i++)
+                        for (int c = 0; c < chunksCount; c++)
                         {
-                            byte[] dataToWrite = compressedChunks[i];
-                            int originalChunkSize = (int)Math.Min(CHUNK_SIZE, entry.Size - (i * CHUNK_SIZE));
+                            int offset = (int)(c * CHUNK_SIZE);
+                            int size = (int)Math.Min(CHUNK_SIZE, entry.Size - offset);
+                            byte[] chunkData = new byte[size];
+                            Array.Copy(fileData, offset, chunkData, 0, size);
 
-                            bw.Write(dataToWrite);
+                            byte[] compressed = CompressData(chunkData);
 
-                            // if chunk is uncompressed, write 0
-                            if (dataToWrite.Length == originalChunkSize)
+                            if (size == CHUNK_SIZE && compressed.Length >= size)
                             {
+                                bw.Write(chunkData);
                                 globalChunkSizes.Add(0);
+                                totalCompressedSize += (uint)size;
                             }
                             else
                             {
-                                globalChunkSizes.Add((ushort)dataToWrite.Length);
+                                bw.Write(compressed);
+                                globalChunkSizes.Add((ushort)compressed.Length);
+                                totalCompressedSize += (uint)compressed.Length;
                             }
                         }
+                        entry.CompressedSize = totalCompressedSize;
                     }
                     else
                     {
-                        // write uncompressed
                         entry.CompressedSize = entry.Size;
-                        entry.ChunkIdx = 0; // 
+                        entry.ChunkIdx = 0;
                         bw.Write(fileData);
                     }
 
-                    Console.WriteLine($"Packed: {entry.Name} ({(shouldCompress ? "Compressed" : "Flat")})");
+                    Console.WriteLine($"Packed: {entry.Name} ({(isCompressed ? "Compressed" : "Flat")})");
                     entries.Add(entry);
                 }
 

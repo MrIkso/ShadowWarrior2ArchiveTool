@@ -1,4 +1,6 @@
 ﻿using System.IO.Compression;
+using System.Text.Encodings.Web;
+using System.Text.Json;
 
 namespace ShadowWarrior2ArchiveTool
 {
@@ -27,9 +29,12 @@ namespace ShadowWarrior2ArchiveTool
             public long InfoOffset;
         }
 
+        private static Dictionary<string, bool> processedFiles = new Dictionary<string, bool>();
 
         public static void ExtractArchive(string archivePath, string outDir)
         {
+            processedFiles.Clear();
+
             using (FileStream fs = new FileStream(archivePath, FileMode.Open, FileAccess.Read))
             using (BinaryReader br = new BinaryReader(fs))
             {
@@ -86,7 +91,7 @@ namespace ShadowWarrior2ArchiveTool
                     chunkSizes[i] = br.ReadUInt16();
                 }
 
-                // 4. Розпакування
+                // unpack files
                 foreach (var entry in entries)
                 {
                     if (entry.Offset == -1)
@@ -101,7 +106,9 @@ namespace ShadowWarrior2ArchiveTool
                         Directory.CreateDirectory(dir);
                     }
 
-                    Console.WriteLine($"Extracting: {entry.Name}");
+                    bool isCompressed = entry.Size != entry.CompressedSize;
+                    Console.WriteLine($"Extracting: {entry.Name} is compressed: {isCompressed}");
+                    processedFiles.Add(entry.Name, isCompressed);
 
                     using (FileStream outFs = new FileStream(fullPath, FileMode.Create, FileAccess.Write))
                     {
@@ -135,7 +142,51 @@ namespace ShadowWarrior2ArchiveTool
                     }
                 }
             }
+            // write config file
+            Console.WriteLine("Writing config file...");
+            WriteConfigFile(outDir);
             Console.WriteLine("Done!");
+        }
+
+        private static void WriteConfigFile(string outDir)
+        {
+            string configPath = Path.Combine(outDir, "unpacked_config.json");
+            try
+            {
+                var filesList = new List<FileModel>();
+                foreach (var kvp in processedFiles)
+                {
+                    var file = new FileModel
+                    {
+                        path = kvp.Key.Replace('\\', '/'),
+                        isCompressed = kvp.Value
+                    };
+                    filesList.Add(file);
+                }
+
+                var config = new ConfigModel();
+                config.fileCount = processedFiles.Count;
+                config.files = filesList;
+
+                var options = new JsonSerializerOptions
+                {
+                    WriteIndented = true,
+                    Encoder = JavaScriptEncoder.UnsafeRelaxedJsonEscaping
+                };
+
+                string json = System.Text.Json.JsonSerializer.Serialize(config, options);
+                string dir = Path.GetDirectoryName(configPath);
+                if (!string.IsNullOrEmpty(dir) && !Directory.Exists(dir))
+                {
+                    Directory.CreateDirectory(dir);
+                }
+
+                File.WriteAllText(configPath, json, System.Text.Encoding.UTF8);
+            }
+            catch (Exception ex)
+            {
+                Console.WriteLine($"Failed to write unpack configuration file '{configPath}': {ex.Message}");
+            }
         }
 
         static void DecompressChunk(byte[] compressedData, Stream outStream)
